@@ -1,0 +1,20 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  elisp:
+    uses: Ypot/ci/.github/workflows/elisp.yml@v1
+
+  release:
+    needs: [elisp]
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      || github.event_name == 'pull_request'
+    permissions:
+      contents: write
+    uses: Ypot/ci/.github/workflows/release.yml@v1
