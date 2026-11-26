@@ -1,8 +1,5 @@
 # Files that reach the release branch; everything else stays in main.
+# Only what the init loads: calfw-cal, calfw-ical and calfw-howm stay out.
 calfw.el
 calfw-org.el
-calfw-cal.el
-calfw-ical.el
-calfw-howm.el
-calfw-compat.el
 calfw-plus.el
