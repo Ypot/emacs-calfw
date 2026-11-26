@@ -1,0 +1,8 @@
+# Files that reach the release branch; everything else stays in main.
+calfw.el
+calfw-org.el
+calfw-cal.el
+calfw-ical.el
+calfw-howm.el
+calfw-compat.el
+calfw-plus.el
