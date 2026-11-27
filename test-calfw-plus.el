@@ -264,4 +264,62 @@
   (should (equal (calfw-plus--season "Solsticio de Verano 16:24 (CEST)") "Solsticio de Verano"))
   (should (equal (calfw-plus--season "Equinoccio de Otoño 02:05 (CEST)") "Equinoccio de Otoño")))
 
+;;; Days with tasks
+
+(defun test--source (dates)
+  "A calfw source with one task on each of DATES, and a bar over them all."
+  (make-calfw-source
+   :name "test"
+   :data (lambda (begin end)
+           (let ((b (calendar-absolute-from-gregorian begin))
+                 (e (calendar-absolute-from-gregorian end)))
+             (append
+              (cl-loop for d in dates
+                       for a = (calendar-absolute-from-gregorian d)
+                       when (<= b a e) collect (list d "Tarea"))
+              (list (list 'periods (list begin end "Barra"))))))))
+
+(defun test--task-day (from step dates)
+  (calfw-plus--task-day (calendar-absolute-from-gregorian from) step
+                        (list (test--source dates))))
+
+(ert-deftest calfw-task-day/nearest-ahead-and-back ()
+  (let ((dates '((11 3 2026) (11 20 2026) (12 1 2026))))
+    (should (equal (test--task-day '(11 3 2026) 1 dates) '(11 20 2026)))
+    (should (equal (test--task-day '(11 10 2026) 1 dates) '(11 20 2026)))
+    (should (equal (test--task-day '(11 20 2026) -1 dates) '(11 3 2026)))
+    ;; The day itself does not count, whatever its tasks.
+    (should (equal (test--task-day '(12 1 2026) -1 dates) '(11 20 2026)))))
+
+(ert-deftest calfw-task-day/beyond-the-first-window ()
+  ;; Months away: past the first 31 days asked for, within the year.
+  (should (equal (test--task-day '(1 1 2026) 1 '((9 15 2026))) '(9 15 2026)))
+  (should (equal (test--task-day '(9 15 2026) -1 '((1 1 2026))) '(1 1 2026)))
+  ;; The bars are not tasks: nothing within the year.
+  (should-not (test--task-day '(1 1 2026) 1 '((6 1 2027))))
+  (should-not (test--task-day '(1 1 2026) 1 nil)))
+
+(ert-deftest calfw-tasks/in-day-and-row-order ()
+  ;; calfw draws a week line by line: the second line holds the 2nd row
+  ;; of every day.  The tasks come day by day, the bar and the line a
+  ;; task wraps into left out, the task in the day's title included.
+  (with-temp-buffer
+    (let ((d1 '(11 19 2026)) (d2 '(11 20 2026)))
+      (insert (propertize " " 'cfw:date d1)
+              (propertize "Uno" 'cfw:date d1 'cfw:row-count 1) "|"
+              (propertize "20" 'cfw:date d2) "\n"
+              (propertize "---" 'cfw:date d1 'cfw:row-count 0 'cfw:period t) "|"
+              (propertize "Tres" 'cfw:date d2 'cfw:row-count 0) "\n"
+              (propertize "Dos" 'cfw:date d1 'cfw:row-count 2) "|"
+              (propertize "Tres sigue" 'cfw:date d2 'cfw:row-count 0) "\n"))
+    (should (equal (mapcar (lambda (task)
+                             (list (car task) (cadr task)
+                                   (buffer-substring-no-properties
+                                    (cddr task)
+                                    (next-single-property-change (cddr task) 'cfw:row-count))))
+                           (calfw-plus--tasks))
+                   (list (list (calendar-absolute-from-gregorian '(11 19 2026)) 1 "Uno")
+                         (list (calendar-absolute-from-gregorian '(11 19 2026)) 2 "Dos")
+                         (list (calendar-absolute-from-gregorian '(11 20 2026)) 0 "Tres"))))))
+
 (ert-run-tests-batch-and-exit)

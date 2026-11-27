@@ -24,6 +24,11 @@
 ;;   keeps its alignment whatever height a TODO keyword face sets.
 ;;
 ;; Loading it is enough: it installs its advice on calfw's own functions.
+;; It also has four commands, which it binds to no key:
+;; `calfw-plus-next-task' and `calfw-plus-previous-task' go from task to
+;; task, day after day; `calfw-plus-next-task-day' and
+;; `calfw-plus-previous-task-day' go to the first task of the next or
+;; previous day that has tasks.  Both go off the screen when they must.
 
 ;;; Code:
 
@@ -454,6 +459,128 @@ title colours would hide the task's own."
                             `(,date ,laid ,@lines))))))
                   (nth 0 args))
           (nth 1 args))))
+
+;;; Days with tasks
+
+(defconst calfw-plus--task-day-window 31
+  "Days `calfw-plus--task-day' asks the sources for at a time.")
+
+(defconst calfw-plus--task-day-reach 366
+  "Days `calfw-plus--task-day' looks ahead or back before it gives up.")
+
+(defun calfw-plus--task-day (from step sources)
+  "Return the nearest date after FROM that has tasks, or before it.
+FROM is an absolute date, STEP 1 to look ahead and -1 to look back.  The
+tasks come from the calfw SOURCES, asked `calfw-plus--task-day-window'
+days at a time, up to `calfw-plus--task-day-reach' days away.  The bars
+of multi-day events are not tasks of a day: calfw keeps them apart."
+  (cl-loop for near from 1 to calfw-plus--task-day-reach
+           by calfw-plus--task-day-window
+           for far = (min calfw-plus--task-day-reach
+                          (+ near calfw-plus--task-day-window -1))
+           for begin = (if (> step 0) (+ from near) (- from far))
+           for end = (if (> step 0) (+ from far) (- from near))
+           for days = (cl-loop for (date . items)
+                               in (calfw--contents-merge
+                                   (calendar-gregorian-from-absolute begin)
+                                   (calendar-gregorian-from-absolute end)
+                                   sources)
+                               for day = (and (consp date) items
+                                              (calendar-absolute-from-gregorian date))
+                               when (and day (<= begin day end)) collect day)
+           when days
+           return (calendar-gregorian-from-absolute
+                   (if (> step 0) (apply #'min days) (apply #'max days)))))
+
+(defun calfw-plus--tasks ()
+  "Return the tasks drawn in the calendar, as (DAY ROW . POSITION).
+DAY is the absolute date, ROW the task's place in its day, POSITION
+where it starts; they come in order of DAY and ROW.  A task is text
+with calfw's `cfw:row-count', which a task lifted into its day's title
+keeps; the bars of multi-day events and the lines a long task wraps
+into are not tasks of their own."
+  (let ((pos (point-min))
+        tasks)
+    (while (setq pos (next-single-property-change pos 'cfw:row-count))
+      (let ((row (get-text-property pos 'cfw:row-count))
+            (date (get-text-property pos 'cfw:date)))
+        (when (and row date (not (get-text-property pos 'cfw:period)))
+          (let ((key (cons (calendar-absolute-from-gregorian date) row)))
+            (unless (assoc key tasks)
+              (push (cons key pos) tasks))))))
+    (mapcar (lambda (task) (cons (caar task) (cons (cdar task) (cdr task))))
+            (sort tasks (lambda (a b)
+                          (or (< (caar a) (caar b))
+                              (and (= (caar a) (caar b)) (< (cdar a) (cdar b)))))))))
+
+(defun calfw-plus--goto-task-of (date last)
+  "Move to the first task drawn on DATE, or its LAST if LAST is non-nil."
+  (let* ((day (calendar-absolute-from-gregorian date))
+         (tasks (seq-filter (lambda (task) (= (car task) day)) (calfw-plus--tasks))))
+    (when tasks
+      (goto-char (cddr (if last (car (last tasks)) (car tasks)))))))
+
+(defun calfw-plus-next-task-day (&optional n)
+  "Move to the first task of the next day that has tasks.
+With N, move that many days with tasks, back if N is negative.  The day
+can be off the screen, up to a year away; the calendar follows it."
+  (interactive "p")
+  (let* ((n (or n 1))
+         (step (if (< n 0) -1 1))
+         (component (or (calfw-cp-get-component)
+                        (user-error "Not in a calfw calendar")))
+         (sources (calfw--model-get-contents-sources
+                   (calfw-component-model component) t))
+         (date (calfw-cursor-to-nearest-date)))
+    (dotimes (_ (abs n))
+      (setq date (or (calfw-plus--task-day (calendar-absolute-from-gregorian date)
+                                           step sources)
+                     (user-error "No day with tasks %s within a year"
+                                 (if (> step 0) "ahead" "back")))))
+    (calfw-navi-goto-date date)
+    (calfw-plus--goto-task-of date nil)))
+
+(defun calfw-plus-previous-task-day (&optional n)
+  "Move to the first task of the previous day that has tasks.
+With N, move that many days with tasks.  See `calfw-plus-next-task-day'."
+  (interactive "p")
+  (calfw-plus-next-task-day (- (or n 1))))
+
+(defun calfw-plus-next-task (&optional n)
+  "Move to the next task, in its day or in the days after.
+With N, move that many tasks, back if N is negative.  Past the last
+task on the screen it goes to the next day with tasks, as
+`calfw-plus-next-task-day' does."
+  (interactive "p")
+  (let ((n (or n 1)))
+    (dotimes (_ (abs n))
+      (let* ((forward (> n 0))
+             (day (calendar-absolute-from-gregorian (calfw-cursor-to-nearest-date)))
+             (on (and (not (get-text-property (point) 'cfw:period))
+                      (get-text-property (point) 'cfw:row-count)))
+             ;; Off a task, the day's title counts as before its tasks.
+             (row (or on -1))
+             (after (lambda (task) (or (> (car task) day)
+                                       (and (= (car task) day) (> (cadr task) row)))))
+             (before (lambda (task) (or (< (car task) day)
+                                        (and (= (car task) day) (< (cadr task) row)))))
+             (tasks (calfw-plus--tasks))
+             (next (if forward
+                       (seq-find after tasks)
+                     (car (last (seq-filter before tasks))))))
+        (if next
+            (goto-char (cddr next))
+          (let ((date (calfw-cursor-to-nearest-date)))
+            (calfw-plus-next-task-day (if forward 1 -1))
+            ;; Back, the day's last task, as if coming up to it.
+            (unless (or forward (equal date (calfw-cursor-to-nearest-date)))
+              (calfw-plus--goto-task-of (calfw-cursor-to-nearest-date) t))))))))
+
+(defun calfw-plus-previous-task (&optional n)
+  "Move to the previous task, in its day or in the days before.
+With N, move that many tasks.  See `calfw-plus-next-task'."
+  (interactive "p")
+  (calfw-plus-next-task (- (or n 1))))
 
 ;;; Activation
 
